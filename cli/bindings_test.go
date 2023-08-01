@@ -2,12 +2,17 @@ package cli_test
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"testing"
 	"time"
 
+	"github.com/cybersamx/golib/stringsutils"
 	"github.com/kylelemons/godebug/pretty"
+	"github.com/spf13/cast"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -371,6 +376,119 @@ func TestInitFlags_Map(t *testing.T) {
 
 			diff := pretty.Compare(test.want, target)
 			assert.Emptyf(t, diff, "want: %+v, got: %+v", test.want, target)
+		})
+	}
+}
+
+// Level is an enum used to test a custom parser for binding and parsing an enum value
+// from a FlagBinding object. Level implements the Value interface in the spf13/pflag
+// package, which allows us to convert a string value stored in a flag to a custom
+// type such as enum.
+type Level int
+
+const (
+	Fatal Level = iota
+	Error
+	Warn
+	Info
+)
+
+// List out the string representations of each enum value.
+var (
+	levelStrs = [...]string{"fatal", "error", "warn", "info"}
+)
+
+func bindLevel(val Level, target *Level) *Level {
+	*target = val
+	return target
+}
+
+func (l *Level) String() string {
+	return levelStrs[*l]
+}
+
+func (l *Level) Set(str string) error {
+	for i, levelStr := range levelStrs {
+		if levelStr == str {
+			*l = Level(i)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("unknown log level %v", str)
+}
+
+func (l *Level) Type() string {
+	return "log-level"
+}
+
+func TestFlagBindingParser(t *testing.T) {
+	tests := []struct {
+		description string
+		args        []string
+		want        Level
+		wantErr     bool
+	}{
+		{"With fatal flag", []string{"--log-level=fatal"}, Fatal, false},
+		{"With error flag", []string{"--log-level=error"}, Error, false},
+		{"With warn flag", []string{"--log-level=warn"}, Warn, false},
+		{"With info flag", []string{"--log-level=info"}, Info, false},
+		{"With unknown flag", []string{"--log-level=unknown"}, Fatal, true},
+		{"Without flag", nil, Fatal, false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.description, func(t *testing.T) {
+			var targetLevel Level
+
+			bindings := []FlagBinding{
+				{
+					Usage:   "flag with custom parser to parse an enum value",
+					Name:    "log-level",
+					Target:  &targetLevel,
+					Default: Fatal,
+					Parser: func(v *viper.Viper, flags *pflag.FlagSet, binding *FlagBinding) error {
+						var level Level
+						shorthand := stringsutils.RuneToString(binding.Shorthand)
+						val := v.Get(binding.Name)
+
+						if binding.Default != nil {
+							level = binding.Default.(Level)
+						}
+
+						target := binding.Target.(*Level)
+						flags.VarP(bindLevel(level, target), binding.Name, shorthand, binding.Usage)
+
+						if val != nil {
+							str, err := cast.ToStringE(val)
+							if err == nil {
+								(*target).Set(str)
+							}
+						}
+
+						return nil
+					},
+				},
+			}
+
+			v := NewViper("GL")
+			cmd := cobra.Command{
+				Use: "app_test",
+				Run: func(cmd *cobra.Command, args []string) {},
+			}
+
+			err := InitFlags(v, cmd.Flags(), bindings)
+			require.NoError(t, err)
+
+			cmd.SetArgs(test.args)
+			err = cmd.Execute()
+			if test.wantErr {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, test.want, targetLevel)
 		})
 	}
 }

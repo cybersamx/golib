@@ -26,6 +26,8 @@ func flagBindingError(flagName string, err error) error {
 		flagName, err, ErrFlagBinding)
 }
 
+type FlagBindingParser func(v *viper.Viper, flags *pflag.FlagSet, binding *FlagBinding) error
+
 // FlagBinding represents the info for simplify the setup of the popular command line management
 // packages such as spf13/pflag and spf13/viper.
 //  1. Set up the name (posix flag aka pflag), shorthand (arg), and usage (description) of a flag.
@@ -38,6 +40,7 @@ type FlagBinding struct {
 	Shorthand rune // One character for a shorthand.
 	Target    any
 	Default   any
+	Parser    FlagBindingParser
 }
 
 func NewViper(envPrefix string) *viper.Viper {
@@ -56,6 +59,14 @@ func NewViper(envPrefix string) *viper.Viper {
 // flags by the user to the target variable or field in a struct object.
 func InitFlags(v *viper.Viper, flags *pflag.FlagSet, bindings []FlagBinding) error {
 	for _, binding := range bindings {
+		if binding.Parser != nil {
+			if err := binding.Parser(v, flags, &binding); err != nil {
+				return flagBindingError(binding.Name, err)
+			}
+
+			continue
+		}
+
 		val := v.Get(binding.Name)
 		shorthand := stringsutils.RuneToString(binding.Shorthand)
 
